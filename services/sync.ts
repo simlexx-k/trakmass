@@ -17,10 +17,19 @@ type SyncStats = {
   errors: string[];
 };
 
-const buildMassUrl = (mutation: SyncMutation) => {
-  if (!SYNC_ENDPOINT) return '';
+const buildHeaders = (token?: string) => {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+};
 
-  const base = `${SYNC_ENDPOINT.replace(/\/$/, '')}/v1/mass`;
+const getMutationUrl = (mutation: SyncMutation) => {
+  const base = `${SYNC_ENDPOINT?.replace(/\/$/, '') ?? ''}/v1/mass`;
+  if (!SYNC_ENDPOINT) return '';
   if (mutation.operation === 'update' || mutation.operation === 'delete') {
     return `${base}/${mutation.entityId}`;
   }
@@ -38,8 +47,8 @@ const requestMethodForOperation = (operation: SyncMutation['operation']) => {
   }
 };
 
-const sendMutation = async (mutation: SyncMutation) => {
-  const url = buildMassUrl(mutation);
+const sendMutation = async (mutation: SyncMutation, token?: string) => {
+  const url = getMutationUrl(mutation);
   if (!url) {
     throw new Error('SYNC_ENDPOINT is not configured');
   }
@@ -47,9 +56,7 @@ const sendMutation = async (mutation: SyncMutation) => {
   const method = requestMethodForOperation(mutation.operation);
   const response = await fetch(url, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: buildHeaders(token),
     body: method === 'DELETE' ? undefined : JSON.stringify(mutation.payload),
   });
 
@@ -64,7 +71,7 @@ export const queueMassEntryCreate = async (entry: MassEntry) =>
     ...entry,
   });
 
-export const syncPendingEntries = async (): Promise<SyncStats> => {
+export const syncPendingEntries = async (token?: string): Promise<SyncStats> => {
   if (!SYNC_ENDPOINT) {
     return {
       attempted: 0,
@@ -85,7 +92,7 @@ export const syncPendingEntries = async (): Promise<SyncStats> => {
 
   for (const mutation of mutations) {
     try {
-      await sendMutation(mutation);
+      await sendMutation(mutation, token);
       synced += 1;
       await deleteMutation(mutation.id);
       await updateMassEntryStatus(mutation.entityId, 'synced');
@@ -103,4 +110,44 @@ export const syncPendingEntries = async (): Promise<SyncStats> => {
     skipped: false,
     errors,
   };
+};
+
+const normalizePayload = (entry: MassEntry) => ({
+  id: entry.id,
+  profileId: entry.profileId,
+  mass: entry.mass,
+  unit: entry.unit,
+  note: entry.note ?? undefined,
+  tags: entry.tags ?? undefined,
+  loggedAt: entry.loggedAt,
+  status: entry.status,
+  createdAt: entry.createdAt,
+  updatedAt: entry.updatedAt,
+});
+
+export const seedEntries = async (entries: MassEntry[], token?: string) => {
+  if (!SYNC_ENDPOINT) {
+    throw new Error('SYNC_ENDPOINT is not configured');
+  }
+  if (!token) {
+    throw new Error('Authentication token missing for seeding');
+  }
+  const url = `${SYNC_ENDPOINT.replace(/\/$/, '')}/v1/mass`;
+  const headers = buildHeaders(token);
+  for (const entry of entries) {
+    const payload = normalizePayload(entry);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok && response.status !== 409) {
+        const message = await response.text();
+        throw new Error(message || `Failed to seed entry ${entry.id}`);
+      }
+    } catch (error) {
+      console.warn('Seed entry failed', error);
+    }
+  }
 };

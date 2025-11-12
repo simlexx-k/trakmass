@@ -106,6 +106,13 @@ TrakMass automatically generates contextual insights:
 * **Restyle / React Native Paper** (UI kit)
 * **Supabase / FastAPI** (optional backend sync)
 
+### Backend sync API
+
+* A lightweight FastAPI service lives in `backend/` and implements `/v1/mass` for create/patch/delete sync mutations.
+* Run it locally via `python -m uvicorn app.main:app --reload` or `docker compose up --build` to satisfy `EXPO_PUBLIC_SYNC_ENDPOINT`.
+* The API keeps an in-memory store so you can test sync end-to-end; see `backend/README.md` for details.
+ * Auth0 JWT validation is enabled via `AUTH0_DOMAIN` and `AUTH0_AUDIENCE`. Tokens issued by that tenant must be sent as `Authorization: Bearer <token>` when calling the sync endpoints.
+
 ### Offline Architecture
 
 1. **Local SQLite store** — `app/services/storage.ts` boots the schema (`mass_entries`, `sync_queue`) and writes every mutation on-device before any network call.

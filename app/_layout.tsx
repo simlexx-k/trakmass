@@ -7,14 +7,16 @@ import 'react-native-reanimated';
 import { initializeDatabase } from '@/services/storage';
 import { useOfflineSync } from '@/hooks/use-offline-sync';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { AuthProvider, useAuth } from '@/hooks/use-auth';
 
 export const unstable_settings = {
   anchor: '(tabs)',
 };
 
-export default function RootLayout() {
+const LayoutInner = () => {
   const colorScheme = useColorScheme();
-  useOfflineSync();
+  const { accessToken } = useAuth();
+  useOfflineSync(undefined, () => accessToken);
 
   useEffect(() => {
     initializeDatabase().catch((error) => {
@@ -30,5 +32,13 @@ export default function RootLayout() {
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
+  );
+};
+
+export default function RootLayout() {
+  return (
+    <AuthProvider>
+      <LayoutInner />
+    </AuthProvider>
   );
 }

@@ -11,11 +11,13 @@ import {
 } from 'react-native';
 
 import { AppShell } from '@/components/layout/AppShell';
-import { syncPendingEntries } from '@/services/sync';
+import { syncPendingEntries, seedEntries } from '@/services/sync';
 import { scheduleDailyReminder, cancelScheduledReminder } from '@/services/reminders';
+import { useMassStore } from '@/store/useMassStore';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAuth } from '@/hooks/use-auth';
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme();
@@ -30,6 +32,10 @@ export default function SettingsScreen() {
   const [reminderInput, setReminderInput] = useState(String(settings.reminderHour));
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const { entries } = useMassStore();
+  const { login, logout, accessToken, isAuthenticated } = useAuth();
+  const [seedMessage, setSeedMessage] = useState<string | null>(null);
+  const [isSeeding, setIsSeeding] = useState(false);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -56,18 +62,58 @@ export default function SettingsScreen() {
     setIsSyncing(true);
     setSyncMessage(null);
     try {
-      const stats = await syncPendingEntries();
+      const stats = await syncPendingEntries(accessToken ?? undefined);
       if (stats.skipped) {
         setSyncMessage(`Sync skipped: ${stats.reason ?? 'feature disabled'}`);
       } else {
         setSyncMessage(`Synced ${stats.synced}/${stats.attempted} changes`);
+        await setLastSync(new Date().toISOString());
       }
-      await setLastSync(new Date().toISOString());
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       setSyncMessage(`Sync failed: ${message}`);
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleAuthAction = async () => {
+    setSyncMessage(null);
+    try {
+      if (isAuthenticated) {
+        await logout();
+      } else {
+        await login();
+      }
+      setSeedMessage(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Authentication failed';
+      setSyncMessage(message);
+    }
+  };
+
+  const handleManualSeed = async () => {
+    if (!accessToken) {
+      Alert.alert('Sign in required', 'Please log in with Auth0 before syncing.');
+      return;
+    }
+    setIsSeeding(true);
+    setSeedMessage(null);
+    try {
+      await seedEntries(entries, accessToken);
+      setSeedMessage('Remote entries seeded successfully.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to seed entries';
+      setSeedMessage(message);
+    } finally {
+      setIsSeeding(false);
+    }
+  };
+
+  const handleAutoSyncToggle = async (value: boolean) => {
+    await update({ autoSync: value });
+    if (value && accessToken) {
+      await handleManualSeed();
     }
   };
 
@@ -112,11 +158,21 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={[styles.card, { backgroundColor: palette.background }]}>
           <Text style={[styles.heading, { color: palette.text }]}>Sync</Text>
+          <View style={styles.authRow}>
+            <Text style={[styles.label, { color: palette.icon }]}>
+              {isAuthenticated ? 'Connected to Auth0' : 'Sign in with Auth0 to sync'}
+            </Text>
+            <Pressable style={styles.syncAction} onPress={handleAuthAction}>
+              <Text style={styles.syncActionText}>
+                {isAuthenticated ? 'Logout' : 'Login'}
+              </Text>
+            </Pressable>
+          </View>
           <View style={styles.row}>
             <Text style={[styles.label, { color: palette.icon }]}>Auto sync</Text>
             <Switch
               value={settings.autoSync}
-              onValueChange={(value) => update({ autoSync: value })}
+              onValueChange={(value) => handleAutoSyncToggle(value)}
               thumbColor={palette.background}
               trackColor={{ false: '#E5E7EB', true: palette.tint }}
             />
@@ -140,6 +196,17 @@ export default function SettingsScreen() {
           </Text>
           {syncMessage ? (
             <Text style={[styles.detail, { color: palette.tint }]}>{syncMessage}</Text>
+          ) : null}
+          <Pressable
+            style={[styles.seedButton, { backgroundColor: palette.tint }]}
+            onPress={handleManualSeed}
+            disabled={!isAuthenticated || isSeeding}>
+            <Text style={[styles.seedButtonText, { color: '#fff' }]}>
+              {isSeeding ? 'Seeding…' : 'Seed remote entries'}
+            </Text>
+          </Pressable>
+          {seedMessage ? (
+            <Text style={[styles.detail, { color: palette.tint }]}>{seedMessage}</Text>
           ) : null}
         </View>
 
@@ -218,6 +285,30 @@ const styles = StyleSheet.create({
   },
   syncButtonText: {
     color: '#fff',
+    fontWeight: '600',
+  },
+  authRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  syncAction: {
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  syncActionText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  seedButton: {
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  seedButtonText: {
     fontWeight: '600',
   },
   reminderRow: {

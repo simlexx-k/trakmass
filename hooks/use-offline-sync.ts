@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import * as Network from 'expo-network';
 
 import { syncPendingEntries } from '@/services/sync';
+import { useSettingsStore } from '@/store/useSettingsStore';
 
 type Options = {
   enabled?: boolean;
@@ -13,9 +14,10 @@ const defaultOptions: Required<Options> = {
   intervalMs: 2 * 60 * 1000,
 };
 
-export const useOfflineSync = (options?: Options) => {
+export const useOfflineSync = (options?: Options, getAccessToken?: () => string | null) => {
   const settings = { ...defaultOptions, ...options };
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { setLastSync } = useSettingsStore.getState();
 
   useEffect(() => {
     if (!settings.enabled) return () => undefined;
@@ -25,7 +27,10 @@ export const useOfflineSync = (options?: Options) => {
 
     const runSync = async () => {
       try {
-        await syncPendingEntries();
+        const stats = await syncPendingEntries(getAccessToken?.() ?? undefined);
+        if (!stats.skipped && stats.attempted > 0) {
+          await setLastSync(new Date().toISOString());
+        }
       } catch (error) {
         // eslint-disable-next-line no-console -- logging best-effort sync status
         console.warn('Offline sync failed', error);
@@ -54,5 +59,5 @@ export const useOfflineSync = (options?: Options) => {
         timerRef.current = null;
       }
     };
-  }, [settings.enabled, settings.intervalMs]);
+  }, [settings.enabled, settings.intervalMs, getAccessToken]);
 };

@@ -21,10 +21,29 @@ import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AppShell } from '@/components/layout/AppShell';
 import { Camera as CameraModule, CameraView } from 'expo-camera';
+import { useProfileStore } from '@/store/useProfileStore';
 import { Path, Svg } from 'react-native-svg';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
+import { syncPendingEntries } from '@/services/sync';
+import { useSettingsStore } from '@/store/useSettingsStore';
+import { useAuth } from '@/hooks/use-auth';
 
 const DEFAULT_PROFILE_ID = 'default';
+const PAGE_SIZE = 20;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const formatRelativeTime = (timestamp?: string | null) => {
+  if (!timestamp) return 'Never synced';
+  const ms = Date.now() - new Date(timestamp).getTime();
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+};
 
 export default function HomeScreen() {
   const { entries, isHydrated, hydrate, addEntry } = useMassStore();
@@ -36,10 +55,21 @@ export default function HomeScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [isQuickAddVisible, setIsQuickAddVisible] = useState(false);
   const [isCameraScannerVisible, setIsCameraScannerVisible] = useState(false);
   const [scanFeedback, setScanFeedback] = useState<string | null>(null);
   const isCameraAvailable = Platform.OS !== 'web';
+  const { profile } = useProfileStore();
+  const { accessToken } = useAuth();
+  const {
+    settings,
+    hydrate: hydrateSettings,
+    isHydrated: areSettingsHydrated,
+    setLastSync,
+  } = useSettingsStore();
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [isSyncingCard, setIsSyncingCard] = useState(false);
   const closeQuickAdd = () => {
     setIsQuickAddVisible(false);
     setIsCameraScannerVisible(false);
@@ -52,6 +82,12 @@ export default function HomeScreen() {
       setError(err instanceof Error ? err.message : 'Failed to load entries');
     });
   }, [hydrate]);
+
+  useEffect(() => {
+    if (!areSettingsHydrated) {
+      hydrateSettings().catch(() => undefined);
+    }
+  }, [areSettingsHydrated, hydrateSettings]);
 
   const latestEntry = entries[0];
 
@@ -77,6 +113,74 @@ export default function HomeScreen() {
     return { points, minMass, maxMass, change, first, latest };
   }, [entries]);
   const canShowTrend = Boolean(trendData && trendData.points.length >= 2);
+  const goalProgress = useMemo(() => {
+    const goalMass = profile?.goalMass;
+    if (!goalMass || !latestEntry) return null;
+    const initialEntry = entries[entries.length - 1] ?? latestEntry;
+    const initialMass = initialEntry.mass;
+    const totalDelta = goalMass - initialMass;
+    if (totalDelta === 0) {
+      return {
+        goalMass,
+        progress: 1,
+        initialMass,
+        totalDelta,
+        remaining: 0,
+        direction: 'flat' as const,
+      };
+    }
+    const currentDelta = latestEntry.mass - initialMass;
+    const progress = clamp(currentDelta / totalDelta, 0, 1);
+    return {
+      goalMass,
+      progress,
+      initialMass,
+      totalDelta,
+      remaining: goalMass - latestEntry.mass,
+      direction: totalDelta > 0 ? 'up' as const : 'down' as const,
+    };
+  }, [entries, latestEntry, profile?.goalMass]);
+  const pendingSyncCount = useMemo(
+    () => entries.filter((entry) => entry.status !== 'synced').length,
+    [entries],
+  );
+  const lastSyncText = formatRelativeTime(settings.lastSync);
+  const nextReminderText = useMemo(() => {
+    if (!settings.remindersEnabled) return 'Disabled';
+    const hour = clamp(settings.reminderHour, 0, 23);
+    const now = new Date();
+    const next = new Date();
+    next.setHours(hour, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    return next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }, [settings.reminderHour, settings.remindersEnabled]);
+  const handleDashboardSync = useCallback(async () => {
+    setIsSyncingCard(true);
+    setSyncMessage(null);
+    try {
+      const stats = await syncPendingEntries(accessToken ?? undefined);
+      if (stats.skipped) {
+        setSyncMessage(`Sync skipped: ${stats.reason ?? 'feature disabled'}`);
+      } else {
+        setSyncMessage(`Synced ${stats.synced}/${stats.attempted} changes`);
+        if (stats.attempted > 0) {
+          await setLastSync(new Date().toISOString());
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setSyncMessage(`Sync failed: ${message}`);
+    } finally {
+      setIsSyncingCard(false);
+    }
+  }, [setLastSync, accessToken]);
+  const autoSyncLabel = settings.autoSync ? 'Auto sync enabled' : 'Auto sync paused';
+  const visibleEntries = entries.slice(0, visibleCount);
+  const canLoadMore = visibleCount < entries.length;
+  const handleLoadMore = useCallback(() => {
+    if (!canLoadMore) return;
+    setVisibleCount((prev) => Math.min(entries.length, prev + PAGE_SIZE));
+  }, [canLoadMore, entries.length]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -110,12 +214,10 @@ export default function HomeScreen() {
     }
   };
 
-  const content = (
-    <KeyboardAvoidingView
-      behavior={Platform.select({ ios: 'padding', android: undefined })}
-      style={styles.container}>
+  const renderHeader = () => (
+    <View style={styles.headerStack}>
       <View style={[styles.quickAddBanner, { backgroundColor: palette.background }]}>
-        <View>
+        <View style={styles.quickAddText}>
           <Text style={styles.cardTitle}>Track a reading</Text>
           <Text style={[styles.quickAddSubtitle, { color: palette.icon }]}>
             Log manually or use the camera to capture an electronic scale.
@@ -201,9 +303,84 @@ export default function HomeScreen() {
           </Text>
         )}
       </View>
+      {goalProgress ? (
+        <View style={[styles.goalCard, { backgroundColor: palette.background }]}>
+          <Text style={styles.goalCardTitle}>Goal progress</Text>
+          <Text style={[styles.goalCardLabel, { color: palette.icon }]}>
+            Goal: {goalProgress.goalMass.toFixed(1)} kg
+          </Text>
+          <Text style={styles.goalCardStatus}>
+            {goalProgress.progress >= 1
+              ? 'Target reached 🎉'
+              : `${Math.abs(goalProgress.remaining).toFixed(1)} kg ${goalProgress.direction === 'down' ? 'to lose' : 'to gain'}`}
+          </Text>
+          <View style={styles.goalProgressBar}>
+            <View
+              style={[
+                styles.goalProgressFill,
+                {
+                  width: `${Math.max(1, goalProgress.progress * 100)}%`,
+                  backgroundColor: palette.tint,
+                },
+              ]}
+            />
+          </View>
+          <View style={styles.goalMilestonesRow}>
+            {[0.25, 0.5, 0.75, 1].map((percent) => {
+              const milestoneMass = goalProgress.initialMass + goalProgress.totalDelta * percent;
+              const reached = goalProgress.progress >= percent;
+              return (
+                <View
+                  key={percent}
+                  style={[
+                    styles.goalMilestoneChip,
+                    reached && { backgroundColor: palette.tint },
+                  ]}>
+                  <Text style={[styles.goalMilestoneText, reached && { color: '#fff' }]}>
+                    {milestoneMass.toFixed(1)} kg
+                  </Text>
+                  <Text style={[styles.goalMilestoneRel, reached && { color: '#fff' }]}>
+                    ✦ {Math.round(percent * 100)}%
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+      <View style={[styles.syncCard, { backgroundColor: palette.background }]}>
+        <View style={styles.syncCardRow}>
+          <Text style={[styles.syncHeading, { color: palette.text }]}>Sync & reminders</Text>
+          <Pressable
+            style={[styles.syncAction, { backgroundColor: palette.tint }]}
+            onPress={handleDashboardSync}
+            disabled={isSyncingCard}>
+            <Text style={styles.syncActionText}>{isSyncingCard ? 'Syncing…' : 'Sync Now'}</Text>
+          </Pressable>
+        </View>
+        <Text style={[styles.syncLabel, { color: palette.icon }]}>{autoSyncLabel}</Text>
+        <Text style={[styles.syncDetail, { color: palette.icon }]}>Last sync {lastSyncText}</Text>
+        <Text style={[styles.syncDetail, { color: palette.icon }]}>
+          Pending entries: {pendingSyncCount}
+        </Text>
+        <Text style={[styles.syncDetail, { color: palette.icon }]}>
+          {settings.remindersEnabled
+            ? `Next reminder at ${nextReminderText}`
+            : 'Reminders disabled'}
+        </Text>
+        {syncMessage ? (
+          <Text style={[styles.syncDetail, { color: palette.tint }]}>{syncMessage}</Text>
+        ) : null}
+      </View>
+    </View>
+  );
 
+  const content = (
+    <KeyboardAvoidingView
+      behavior={Platform.select({ ios: 'padding', android: undefined })}
+      style={styles.container}>
       <FlatList
-        data={entries}
+        data={visibleEntries}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
@@ -212,6 +389,16 @@ export default function HomeScreen() {
             No entries yet. Start logging to see trends.
           </Text>
         }
+        ListHeaderComponent={renderHeader}
+        ListFooterComponent={
+          canLoadMore ? (
+            <View style={styles.loadMoreIndicator}>
+              <ActivityIndicator />
+            </View>
+          ) : null
+        }
+        onEndReached={handleLoadMore}
+        onEndReachedThreshold={0.5}
         renderItem={({ item }) => <EntryCard entry={item} palette={palette} />}
       />
     </KeyboardAvoidingView>
@@ -587,13 +774,15 @@ const StatusBadge = ({ status }: { status: string }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 16,
     paddingTop: 16,
+    paddingHorizontal: 0,
   },
   quickAddBanner: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 16,
     padding: 16,
     borderRadius: 16,
     marginBottom: 16,
@@ -611,10 +800,17 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 20,
     paddingVertical: 10,
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    flexShrink: 0,
   },
   quickAddButtonText: {
     fontWeight: '600',
     color: '#fff',
+  },
+  quickAddText: {
+    flex: 1,
+    minWidth: 0,
   },
   modalOverlay: {
     flex: 1,
@@ -741,9 +937,107 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: 80,
     gap: 12,
+    paddingHorizontal: 16,
+  },
+  headerStack: {
+    gap: 16,
   },
   graphCard: {
     paddingBottom: 20,
+    marginBottom: 16,
+  },
+  goalCard: {
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  goalCardTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  goalCardLabel: {
+    fontSize: 14,
+    marginTop: 4,
+  },
+  goalCardStatus: {
+    fontSize: 14,
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  goalProgressBar: {
+    marginTop: 12,
+    height: 8,
+    backgroundColor: '#EEF1F5',
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  goalProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  goalMilestonesRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  goalMilestoneChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  goalMilestoneText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  goalMilestoneRel: {
+    fontSize: 9,
+    color: '#6B7280',
+  },
+  syncCard: {
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  syncCardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  syncHeading: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  syncAction: {
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  syncActionText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  syncLabel: {
+    fontSize: 14,
+    marginTop: 6,
+  },
+  syncDetail: {
+    fontSize: 13,
+    marginTop: 2,
   },
   cameraSectionTitle: {
     marginTop: 16,
@@ -807,6 +1101,10 @@ const styles = StyleSheet.create({
   graphEmptyState: {
     textAlign: 'center',
     marginTop: 16,
+  },
+  loadMoreIndicator: {
+    paddingVertical: 16,
+    alignItems: 'center',
   },
   cameraToggle: {
     borderRadius: 12,
