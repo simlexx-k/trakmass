@@ -180,7 +180,7 @@ On the web build, the same API surface is backed by `localStorage` to avoid the 
 ### 2️⃣ Install
 
 ```bash
-git clone https://github.com/yourusername/trakmass.git
+git clone https://github.com/simlexx-k/trakmass.git
 cd trakmass
 npm install
 ```
@@ -216,7 +216,7 @@ Add your `.env` file (for Supabase/FastAPI sync):
 
 ```bash
 EXPO_PUBLIC_SYNC_ENDPOINT=https://api.trakmass.app
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://trakmass-central.supabase.co
 SUPABASE_KEY=public-anon-key
 ```
 
