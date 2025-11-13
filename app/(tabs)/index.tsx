@@ -9,6 +9,7 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -27,6 +28,7 @@ import TextRecognition from '@react-native-ml-kit/text-recognition';
 import { syncPendingEntries } from '@/services/sync';
 import { useSettingsStore } from '@/store/useSettingsStore';
 import { useAuth } from '@/hooks/use-auth';
+import { useToast } from 'react-native-toast-notifications';
 
 const DEFAULT_PROFILE_ID = 'default';
 const PAGE_SIZE = 20;
@@ -61,7 +63,8 @@ export default function HomeScreen() {
   const [scanFeedback, setScanFeedback] = useState<string | null>(null);
   const isCameraAvailable = Platform.OS !== 'web';
   const { profile } = useProfileStore();
-  const { accessToken } = useAuth();
+  const { accessToken, login, isAuthenticated } = useAuth();
+  const toast = useToast();
   const {
     settings,
     hydrate: hydrateSettings,
@@ -158,11 +161,20 @@ export default function HomeScreen() {
     setIsSyncingCard(true);
     setSyncMessage(null);
     try {
+      if (!accessToken) {
+        await login();
+        setSyncMessage('Please log in to sync.');
+        return;
+      }
       const stats = await syncPendingEntries(accessToken ?? undefined);
       if (stats.skipped) {
-        setSyncMessage(`Sync skipped: ${stats.reason ?? 'feature disabled'}`);
+        const message = `Sync skipped: ${stats.reason ?? 'feature disabled'}`;
+        setSyncMessage(message);
+        toast.show(message, { type: 'warning' });
       } else {
-        setSyncMessage(`Synced ${stats.synced}/${stats.attempted} changes`);
+        const message = `Synced ${stats.synced}/${stats.attempted} changes`;
+        setSyncMessage(message);
+        toast.show(message, { type: 'success' });
         if (stats.attempted > 0) {
           await setLastSync(new Date().toISOString());
         }
@@ -170,10 +182,11 @@ export default function HomeScreen() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       setSyncMessage(`Sync failed: ${message}`);
+      toast.show(`Sync failed: ${message}`, { type: 'danger' });
     } finally {
       setIsSyncingCard(false);
     }
-  }, [setLastSync, accessToken]);
+  }, [setLastSync, accessToken, login, toast]);
   const autoSyncLabel = settings.autoSync ? 'Auto sync enabled' : 'Auto sync paused';
   const visibleEntries = entries.slice(0, visibleCount);
   const canLoadMore = visibleCount < entries.length;
@@ -348,6 +361,35 @@ export default function HomeScreen() {
           </View>
         </View>
       ) : null}
+      <View style={[styles.shareCard, { backgroundColor: palette.background }]}>
+        <Text style={styles.cardTitle}>Share progress</Text>
+        <Text style={[styles.shareBody, { color: palette.icon }]}>
+          Let your friends know how you’re tracking—share a snapshot of your latest readings
+          and goal momentum.
+        </Text>
+        <Pressable
+          style={[
+            styles.shareButton,
+            { backgroundColor: isSharing ? '#ccc' : palette.tint },
+          ]}
+          onPress={handleShareProgress}
+          disabled={isSharing}>
+          <Text style={styles.shareButtonText}>{isSharing ? 'Sharing…' : 'Share now'}</Text>
+        </Pressable>
+      </View>
+      {!isAuthenticated && (
+        <View style={[styles.cloudBanner, { backgroundColor: palette.background }]}>
+          <Text style={[styles.cloudBannerTitle, { color: palette.text }]}>
+            Want cloud backup?
+          </Text>
+          <Text style={[styles.cloudBannerBody, { color: palette.icon }]}>
+            Sign in with Auth0 to sync entries and keep them stored remotely.
+          </Text>
+          <Pressable style={[styles.cloudBannerButton, { backgroundColor: palette.tint }]} onPress={login}>
+            <Text style={styles.cloudBannerButtonText}>Enable cloud sync</Text>
+          </Pressable>
+        </View>
+      )}
       <View style={[styles.syncCard, { backgroundColor: palette.background }]}>
         <View style={styles.syncCardRow}>
           <Text style={[styles.syncHeading, { color: palette.text }]}>Sync & reminders</Text>
@@ -374,6 +416,58 @@ export default function HomeScreen() {
       </View>
     </View>
   );
+
+  const shareSummaryText = useMemo(() => {
+    const lines: string[] = [];
+    if (latestEntry) {
+      lines.push(
+        `Latest reading: ${latestEntry.mass.toFixed(1)} ${latestEntry.unit} on ${new Date(
+          latestEntry.loggedAt,
+        ).toLocaleDateString()}`,
+      );
+    }
+    if (average30) {
+      lines.push(`30-day average: ${average30.toFixed(1)} ${unit}`);
+    }
+    if (trendData && trendData.change !== 0) {
+      const changeSign = trendData.change > 0 ? '+' : '';
+      lines.push(
+        `Trend change: ${changeSign}${trendData.change.toFixed(1)} ${trendData.latest.unit} over ${trendData.points.length} logs`,
+      );
+    }
+    if (goalProgress) {
+      const pct = Math.round(Math.min(100, Math.max(0, goalProgress.progress * 100)));
+      lines.push(`Goal progress: ${pct}% toward ${goalProgress.goalMass.toFixed(1)} kg`);
+    }
+    if (lines.length === 0) {
+      lines.push('Tracking my mass progress with TrakMass.');
+    }
+    lines.push('#TrakMass');
+    return lines.join('\n');
+  }, [average30, goalProgress, latestEntry, trendData, unit]);
+
+  const [isSharing, setIsSharing] = useState(false);
+  const handleShareProgress = useCallback(async () => {
+    if (isSharing) return;
+    setIsSharing(true);
+    try {
+      const result = await Share.share({
+        title: 'My TrakMass progress',
+        message: shareSummaryText,
+      });
+      if (result.action === Share.sharedAction) {
+        toast.show('Progress summary shared!', { type: 'success' });
+      } else if (result.action === Share.dismissedAction) {
+        toast.show('Share dismissed', { type: 'warning' });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to share progress';
+      toast.show(message, { type: 'danger' });
+      // share cancelled or failed; ignore
+    } finally {
+      setIsSharing(false);
+    }
+  }, [isSharing, shareSummaryText, toast]);
 
   const content = (
     <KeyboardAvoidingView
@@ -858,6 +952,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 12,
   },
+  shareCard: {
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  shareBody: {
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  shareButton: {
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
   formRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1001,6 +1118,32 @@ const styles = StyleSheet.create({
   goalMilestoneRel: {
     fontSize: 9,
     color: '#6B7280',
+  },
+  cloudBanner: {
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EA',
+    marginBottom: 16,
+  },
+  cloudBannerTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  cloudBannerBody: {
+    fontSize: 14,
+    marginTop: 4,
+    marginBottom: 10,
+  },
+  cloudBannerButton: {
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignSelf: 'flex-start',
+  },
+  cloudBannerButtonText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   syncCard: {
     borderRadius: 16,

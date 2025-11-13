@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
+import { ToastProvider } from 'react-native-toast-notifications';
 
 import { initializeDatabase } from '@/services/storage';
 import { useOfflineSync } from '@/hooks/use-offline-sync';
@@ -37,8 +38,10 @@ const LayoutInner = () => {
 
 export default function RootLayout() {
   return (
+    <ToastProvider>
     <AuthProvider>
       <LayoutInner />
     </AuthProvider>
+    </ToastProvider>
   );
 }

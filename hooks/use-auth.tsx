@@ -1,120 +1,213 @@
+import * as WebBrowser from 'expo-web-browser';
+import { AppState, Platform, Linking as RNLinking } from 'react-native';
+import * as Linking from 'expo-linking';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import * as AuthSession from 'expo-auth-session';
 import * as SecureStore from 'expo-secure-store';
 
-const AUTH0_DOMAIN = process.env.EXPO_PUBLIC_AUTH0_DOMAIN ?? '';
-const AUTH0_CLIENT_ID = process.env.EXPO_PUBLIC_AUTH0_CLIENT_ID ?? '';
-const AUTH0_AUDIENCE = process.env.EXPO_PUBLIC_AUTH0_AUDIENCE ?? '';
-const TOKEN_KEY = 'trakmass.auth.token';
+const TOKEN_KEY = 'trakmass.session.token';
+const USER_KEY = 'trakmass.session.user';
+const EXPO_SYNC_ENDPOINT = process.env.EXPO_PUBLIC_SYNC_ENDPOINT ?? 'http://localhost:8009/v1/mass';
+const BACKEND_BASE_URL = EXPO_SYNC_ENDPOINT.replace(/\/v1\/mass\/?$/, '');
+const LOGIN_URL = `${BACKEND_BASE_URL}/auth/login`;
+const ME_URL = `${BACKEND_BASE_URL}/auth/me`;
+const REDIRECT_URI = 'trakmass://auth';
+const USER_REFRESH_INTERVAL = 25 * 60 * 1000;
 
-const isConfigured = Boolean(AUTH0_DOMAIN && AUTH0_CLIENT_ID && AUTH0_AUDIENCE);
+const resolveRedirectUri = () => {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    return window.location.origin;
+  }
+  return REDIRECT_URI;
+};
+
+type UserInfo = {
+  sub: string;
+  name?: string;
+  email?: string;
+};
 
 type AuthContextValue = {
   accessToken: string | null;
+  user: UserInfo | null;
   login: () => Promise<void>;
   logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  handleDeepLink: (url: string | null) => Promise<void>;
   isAuthenticated: boolean;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const createFallbackValue = (): AuthContextValue => ({
-  accessToken: null,
-  login: async () => {
-    throw new Error('Auth0 is not configured.');
-  },
-  logout: async () => undefined,
-  isAuthenticated: false,
-});
+let secureStoreAvailable: boolean | null = null;
+const checkSecureStore = async () => {
+  if (secureStoreAvailable !== null) {
+    return secureStoreAvailable;
+  }
+  try {
+    secureStoreAvailable = await SecureStore.isAvailableAsync();
+  } catch {
+    secureStoreAvailable = false;
+  }
+  return secureStoreAvailable;
+};
+
+let fallbackToken: string | null = null;
+const readToken = async (): Promise<string | null> => {
+  if (Platform.OS === 'web') {
+    return window?.localStorage.getItem(TOKEN_KEY) ?? null;
+  }
+  if (await checkSecureStore()) {
+    return SecureStore.getItemAsync(TOKEN_KEY);
+  }
+  return fallbackToken;
+};
+
+const writeToken = async (token: string | null) => {
+  if (Platform.OS === 'web') {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+    return;
+  }
+  if (await checkSecureStore()) {
+    if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
+    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+    return;
+  }
+  fallbackToken = token;
+};
+
+const fetchProfile = async (token: string): Promise<UserInfo | null> => {
+  const resp = await fetch(ME_URL, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (resp.status === 401) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) return null;
+  return resp.json();
+};
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  if (!isConfigured) {
-    return <AuthContext.Provider value={createFallbackValue()}>{children}</AuthContext.Provider>;
-  }
-
-  const redirectUri = AuthSession.makeRedirectUri({
-    scheme: 'trakmass',
-    useProxy: true,
-  });
-  const discovery = AuthSession.useAutoDiscovery(`https://${AUTH0_DOMAIN}`);
-  const [request, response, promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: AUTH0_CLIENT_ID,
-      redirectUri,
-      scopes: ['openid', 'profile', 'email'],
-      extraParams: { audience: AUTH0_AUDIENCE },
-    },
-    discovery,
-  );
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [user, setUser] = useState<UserInfo | null>(null);
 
-  useEffect(() => {
-    const loadToken = async () => {
-      const stored = await SecureStore.getItemAsync(TOKEN_KEY);
-      if (stored) {
-        setAccessToken(stored);
-      }
-    };
-    loadToken();
+  const clearStoredUser = useCallback(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.localStorage.removeItem(USER_KEY);
+    }
   }, []);
 
-  useEffect(() => {
-    if (response?.type !== 'success' || !request || !discovery?.token_endpoint) {
+  const invalidateSession = useCallback(async () => {
+    await writeToken(null);
+    setAccessToken(null);
+    setUser(null);
+    clearStoredUser();
+  }, [clearStoredUser]);
+
+  const updateUser = useCallback(async (token: string | null) => {
+    if (!token) {
+      await invalidateSession();
       return;
     }
-    (async () => {
-      try {
-        const tokenResponse = await AuthSession.exchangeCodeAsync(
-          {
-            clientId: AUTH0_CLIENT_ID,
-            code: response.params.code,
-            redirectUri,
-            extraParams: {
-              code_verifier: request.codeVerifier,
-              audience: AUTH0_AUDIENCE,
-            },
-          },
-          discovery,
-        );
-        if (tokenResponse.access_token) {
-          await SecureStore.setItemAsync(TOKEN_KEY, tokenResponse.access_token);
-          setAccessToken(tokenResponse.access_token);
-        }
-      } catch {
-        // ignore, login will fail silently
+    try {
+      const profile = await fetchProfile(token);
+      if (!profile) {
+        return;
       }
-    })();
-  }, [response, request, discovery, redirectUri]);
+      setUser(profile);
+      if (Platform.OS === 'web') {
+        window.localStorage.setItem(USER_KEY, JSON.stringify(profile));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Unauthorized') {
+        await invalidateSession();
+      }
+    }
+  }, [invalidateSession]);
+
+  const handleDeepLink = useCallback(
+    async (url: string | null) => {
+      if (!url) return;
+      const parsed = Linking.parse(url);
+      const token = parsed.queryParams?.session_token;
+      if (token) {
+        await writeToken(token);
+        setAccessToken(token);
+        await updateUser(token);
+      }
+    },
+    [updateUser],
+  );
+
+  useEffect(() => {
+    const init = async () => {
+      const stored = await readToken();
+      if (stored) {
+        setAccessToken(stored);
+        await updateUser(stored);
+      }
+      const initialUrl = await RNLinking.getInitialURL();
+      await handleDeepLink(initialUrl);
+    };
+    init();
+    const subscription = RNLinking.addEventListener('url', (event) => handleDeepLink(event.url));
+    return () => subscription.remove();
+  }, [handleDeepLink, updateUser]);
 
   const login = useCallback(async () => {
-    if (!request) {
-      throw new Error('Auth request is not ready');
-    }
-    await promptAsync({ useProxy: true });
-  }, [promptAsync, request]);
+    await WebBrowser.openBrowserAsync(
+      `${LOGIN_URL}?redirect=${encodeURIComponent(resolveRedirectUri())}`,
+    );
+  }, []);
 
   const logout = useCallback(async () => {
-    setAccessToken(null);
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-  }, []);
+    await invalidateSession();
+  }, [invalidateSession]);
+
+  const refreshUser = useCallback(async () => {
+    if (accessToken) {
+      await updateUser(accessToken);
+    }
+  }, [accessToken, updateUser]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    const intervalId = setInterval(() => {
+      refreshUser().catch(() => undefined);
+    }, USER_REFRESH_INTERVAL);
+    return () => clearInterval(intervalId);
+  }, [accessToken, refreshUser]);
+
+  useEffect(() => {
+    const handleAppState = (nextState: string) => {
+      if (nextState === 'active') {
+        refreshUser().catch(() => undefined);
+      }
+    };
+    const subscription = AppState.addEventListener('change', handleAppState);
+    return () => subscription.remove();
+  }, [refreshUser]);
 
   const value = useMemo(
     () => ({
       accessToken,
+      user,
       login,
       logout,
+      refreshUser,
+      handleDeepLink,
       isAuthenticated: Boolean(accessToken),
     }),
-    [accessToken, login, logout],
+    [accessToken, user, login, logout, refreshUser, handleDeepLink],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
+  const ctx = useContext(AuthContext);
+  if (!ctx) {
     throw new Error('useAuth must be used within AuthProvider');
   }
-  return context;
+  return ctx;
 };

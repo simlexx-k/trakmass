@@ -7,8 +7,14 @@ import {
 } from '@/services/storage';
 import type { MassEntry, SyncMutation } from '@/types/mass';
 
-const SYNC_ENDPOINT = process.env.EXPO_PUBLIC_SYNC_ENDPOINT;
-
+const normalizeEndpoint = (endpoint: string) => endpoint.replace(/\/$/, '');
+const rawSyncEndpoint = process.env.EXPO_PUBLIC_SYNC_ENDPOINT;
+const SYNC_ENDPOINT =
+  rawSyncEndpoint?.endsWith('/v1/mass')
+    ? normalizeEndpoint(rawSyncEndpoint)
+    : rawSyncEndpoint
+    ? `${normalizeEndpoint(rawSyncEndpoint)}/v1/mass`
+    : undefined;
 type SyncStats = {
   attempted: number;
   synced: number;
@@ -28,8 +34,8 @@ const buildHeaders = (token?: string) => {
 };
 
 const getMutationUrl = (mutation: SyncMutation) => {
-  const base = `${SYNC_ENDPOINT?.replace(/\/$/, '') ?? ''}/v1/mass`;
-  if (!SYNC_ENDPOINT) return '';
+  const base = SYNC_ENDPOINT?.replace(/\/$/, '');
+  if (!base) return '';
   if (mutation.operation === 'update' || mutation.operation === 'delete') {
     return `${base}/${mutation.entityId}`;
   }
@@ -132,12 +138,15 @@ export const seedEntries = async (entries: MassEntry[], token?: string) => {
   if (!token) {
     throw new Error('Authentication token missing for seeding');
   }
-  const url = `${SYNC_ENDPOINT.replace(/\/$/, '')}/v1/mass`;
+  const base = SYNC_ENDPOINT?.replace(/\/$/, '');
+  if (!base) {
+    throw new Error('SYNC_ENDPOINT is not configured');
+  }
   const headers = buildHeaders(token);
   for (const entry of entries) {
     const payload = normalizePayload(entry);
     try {
-      const response = await fetch(url, {
+      const response = await fetch(base, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),

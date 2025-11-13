@@ -8,10 +8,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAuth } from '@/hooks/use-auth';
 import { useProfileStore } from '@/store/useProfileStore';
 
 type NavKey = 'dashboard' | 'profile' | 'insights' | 'settings';
@@ -57,13 +58,22 @@ export const AppShell = ({ title = 'Dashboard', activeRoute, children }: AppShel
     }
   }, [isDesktop]);
 
-  const initials =
-    profile?.fullName
-      ?.split(' ')
+  const { isAuthenticated, user } = useAuth();
+  const displayName = isAuthenticated
+    ? user?.name ?? user?.email ?? 'Synced user'
+    : profile?.fullName ?? 'Guest';
+  const displayEmail = isAuthenticated ? user?.email ?? user?.sub : undefined;
+  const initials = useMemo(() => {
+    if (!displayName) return 'TM';
+    const value = displayName
+      .split(' ')
       .map((part) => part[0])
       .join('')
       .slice(0, 2)
-      .toUpperCase() ?? 'TM';
+      .toUpperCase();
+    return value || displayName[0].toUpperCase() || 'TM';
+  }, [displayName]);
+  const profileRoleText = isAuthenticated ? 'Sync mode' : 'Open mode';
 
   const handleNavigate = (item: NavItem) => {
     router.push(item.route);
@@ -158,9 +168,11 @@ export const AppShell = ({ title = 'Dashboard', activeRoute, children }: AppShel
               </View>
               <View>
                 <Text style={[styles.profileLabel, { color: palette.text }]}>
-                  {profile?.fullName || 'Guest'}
+                  {displayName}
                 </Text>
-                <Text style={[styles.profileRole, { color: palette.icon }]}>Open mode</Text>
+                <Text style={[styles.profileRole, { color: palette.icon }]}>
+                  {profileRoleText}
+                </Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={palette.icon} />
             </Pressable>

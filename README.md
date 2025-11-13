@@ -112,6 +112,7 @@ TrakMass automatically generates contextual insights:
 * Run it locally via `python -m uvicorn app.main:app --reload` or `docker compose up --build` to satisfy `EXPO_PUBLIC_SYNC_ENDPOINT`.
 * The API keeps an in-memory store so you can test sync end-to-end; see `backend/README.md` for details.
  * Auth0 JWT validation is enabled via `AUTH0_DOMAIN` and `AUTH0_AUDIENCE`. Tokens issued by that tenant must be sent as `Authorization: Bearer <token>` when calling the sync endpoints.
+ * During development the Expo app reads `EXPO_PUBLIC_AUTH0_DOMAIN`, `EXPO_PUBLIC_AUTH0_CLIENT_ID`, and `EXPO_PUBLIC_AUTH0_AUDIENCE` (e.g., `https://trakmass-sync`) from `.env.local`. Update this file (or your EAS secrets) and restart the dev client whenever you change those values.
 
 ### Offline Architecture
 

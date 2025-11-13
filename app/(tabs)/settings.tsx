@@ -62,6 +62,11 @@ export default function SettingsScreen() {
     setIsSyncing(true);
     setSyncMessage(null);
     try {
+      if (!accessToken) {
+        await login();
+        setSyncMessage('Please log in to sync.');
+        return;
+      }
       const stats = await syncPendingEntries(accessToken ?? undefined);
       if (stats.skipped) {
         setSyncMessage(`Sync skipped: ${stats.reason ?? 'feature disabled'}`);
@@ -185,7 +190,7 @@ export default function SettingsScreen() {
             <Pressable
               style={[styles.syncButton, { backgroundColor: palette.tint }]}
               onPress={handleSyncNow}
-              disabled={isSyncing}>
+              disabled={!isAuthenticated || isSyncing}>
               <Text style={styles.syncButtonText}>
                 {isSyncing ? 'Syncing…' : 'Sync Now'}
               </Text>

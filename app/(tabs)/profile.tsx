@@ -11,6 +11,7 @@ import {
 
 import { AppShell } from '@/components/layout/AppShell';
 import { useProfileStore } from '@/store/useProfileStore';
+import { useAuth } from '@/hooks/use-auth';
 import type { MassUnit } from '@/types/mass';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -19,6 +20,7 @@ const unitOptions: MassUnit[] = ['kg', 'lb'];
 
 export default function ProfileScreen() {
   const { profile, hydrate, isHydrated, save } = useProfileStore();
+  const { user, isAuthenticated } = useAuth();
   const colorScheme = useColorScheme();
   const palette = Colors[colorScheme ?? 'light'];
   const [fullName, setFullName] = useState('');
@@ -44,6 +46,13 @@ export default function ProfileScreen() {
       setGoalMass(profile.goalMass ? String(profile.goalMass) : '');
     }
   }, [profile]);
+
+  useEffect(() => {
+    if (!profile && isAuthenticated && user) {
+      setFullName(user.name ?? '');
+      setEmail(user.email ?? '');
+    }
+  }, [profile, isAuthenticated, user]);
 
   const completion = useMemo(() => {
     const fields = [fullName.trim(), email.trim(), goalMass.trim(), bio.trim()];
@@ -83,17 +92,19 @@ export default function ProfileScreen() {
           <Text style={styles.sectionTitle}>Personal Details</Text>
           <TextInput
             placeholder="Full name"
-            style={styles.input}
+            style={[styles.input, isAuthenticated && styles.readOnlyInput]}
             value={fullName}
             onChangeText={setFullName}
+            editable={!isAuthenticated}
           />
           <TextInput
             placeholder="Email (optional)"
-            style={styles.input}
+            style={[styles.input, isAuthenticated && styles.readOnlyInput]}
             keyboardType="email-address"
             autoCapitalize="none"
             value={email}
             onChangeText={setEmail}
+            editable={!isAuthenticated}
           />
           <TextInput
             placeholder="Tell us about your goals"
@@ -198,6 +209,9 @@ const styles = StyleSheet.create({
   bioInput: {
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  readOnlyInput: {
+    backgroundColor: '#F5F5F7',
   },
   label: {
     fontSize: 14,
